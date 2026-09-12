@@ -127,19 +127,31 @@ fn draw_system_overview(frame: &mut Frame, area: Rect, host: &HostStats, llama: 
     let mut rows = Vec::new();
     for inst in &llama.instances {
         for s in &inst.slots {
-            let (state_str, color) = match s.state {
-                1 => ("PROCESSING", YELLOW),
-                2 => ("GENERATING", GREEN),
-                _ => ("IDLE", DIM),
+            let state = s.state_str();
+            let color = match state {
+                "GENERATING" => GREEN,
+                "PREFILLING" | "BUSY" => YELLOW,
+                _ => DIM,
             };
+
+            let ctx_label = if s.n_ctx > 0 {
+                format!("{}/{} ({:.0}%)", s.context_used(), s.n_ctx, (s.context_used() as f64 / s.n_ctx as f64) * 100.0)
+            } else {
+                "—".into()
+            };
+
+            let speed_label = s.t_token
+                .map(|t| format!("{:.1}ms", t))
+                .unwrap_or_else(|| "—".into());
+
             rows.push(
                 Row::new(vec![
                     format!(":{}", inst.port),
-                    truncate_str(&inst.model_name, 22),
+                    truncate_str(&inst.model_name, 24),
                     format!("Slot {}", s.id),
-                    state_str.to_string(),
-                    format!("{}/{} ctx", s.n_past, s.n_ctx),
-                    s.t_token.map(|t| format!("{:.1} ms", t)).unwrap_or_else(|| "—".into()),
+                    state.to_string(),
+                    ctx_label,
+                    speed_label,
                 ])
                 .style(Style::default().fg(color)),
             );
@@ -148,12 +160,12 @@ fn draw_system_overview(frame: &mut Frame, area: Rect, host: &HostStats, llama: 
 
     if rows.is_empty() {
         rows.push(Row::new(vec![
-            "—",
-            "No active server slots found",
-            "—",
-            "—",
-            "—",
-            "—",
+            "—".into(),
+            "No active server slots found".into(),
+            "—".into(),
+            "—".into(),
+            "—".into(),
+            "—".into(),
         ]).style(Style::default().fg(DIM)));
     }
 
@@ -161,10 +173,10 @@ fn draw_system_overview(frame: &mut Frame, area: Rect, host: &HostStats, llama: 
         rows,
         [
             Constraint::Length(7),  // Port
-            Constraint::Length(24), // Model
+            Constraint::Length(26), // Model
             Constraint::Length(8),  // Slot
             Constraint::Length(12), // State
-            Constraint::Length(16), // Context
+            Constraint::Length(18), // Context
             Constraint::Min(9),     // Speed
         ],
     )
