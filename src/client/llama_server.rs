@@ -29,9 +29,11 @@ pub struct SlotInfo {
     #[serde(default)]
     pub t_token: Option<f64>,
 
-    // Calculated fields across polls
     #[serde(skip)]
     pub calculated_tps: Option<f64>,
+
+    #[serde(skip)]
+    pub live_state: &'static str,
 }
 
 fn default_id_task() -> i64 {
@@ -39,23 +41,39 @@ fn default_id_task() -> i64 {
 }
 
 impl SlotInfo {
-    pub fn state_str(&self) -> &'static str {
-        if self.is_processing {
-            if self.n_decoded > 0 {
-                "GENERATING"
-            } else if self.n_prompt_tokens_processed < self.n_prompt_tokens {
-                "PREFILLING"
-            } else {
-                "GENERATING"
-            }
-        } else {
-            "IDLE"
-        }
-    }
-
     pub fn context_used(&self) -> usize {
         self.n_prompt_tokens_processed.max(self.n_prompt_tokens) + self.n_decoded
     }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct PrometheusMetrics {
+    pub tokens_predicted: Option<u64>,
+    pub tokens_prompt: Option<u64>,
+}
+
+fn parse_prometheus_body(body: &str) -> PrometheusMetrics {
+    let mut metrics = PrometheusMetrics::default();
+    for line in body.lines() {
+        let line = line.trim();
+        if line.starts_with('#') || line.is_empty() {
+            continue;
+        }
+
+        let mut parts = line.split_whitespace();
+        if let (Some(key), Some(val)) = (parts.next(), parts.next()) {
+            if key == "llamacpp:tokens_predicted_total" {
+                if let Ok(v) = val.parse::<f64>() {
+                    metrics.tokens_predicted = Some(v as u64);
+                }
+            } else if key == "llamacpp:prompt_tokens_total" {
+                if let Ok(v) = val.parse::<f64>() {
+                    metrics.tokens_prompt = Some(v as u64);
+                }
+            }
+        }
+    }
+    metrics
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -78,6 +96,7 @@ pub struct LlamaInstance {
     pub active_slots: usize,
     pub total_slots: usize,
     pub tokens_per_sec: f64,
+    pub has_metrics_endpoint: bool,
     pub slots: Vec<SlotInfo>,
 }
 
@@ -88,8 +107,14 @@ pub struct MultiLlamaStats {
 }
 
 #[derive(Clone)]
+struct PrevMetricState {
+    tokens_predicted: u64,
+    timestamp: Instant,
+}
+
+#[derive(Clone)]
 struct PrevSlotState {
-    decoded: usize,
+    total_tokens: usize,
     timestamp: Instant,
 }
 
@@ -97,6 +122,7 @@ pub struct MultiLlamaManager {
     client: reqwest::Client,
     sys: System,
     default_ports: Vec<u16>,
+    prev_metrics: HashMap<u16, PrevMetricState>,
     prev_slots: HashMap<(u16, u32), PrevSlotState>,
 }
 
@@ -110,6 +136,7 @@ impl MultiLlamaManager {
                 .unwrap(),
             sys: System::new_with_specifics(refresh),
             default_ports: vec![8080, 8081, 8082, 8083, 8084, 8085, 8000],
+            prev_metrics: HashMap::new(),
             prev_slots: HashMap::new(),
         }
     }
@@ -182,6 +209,16 @@ impl MultiLlamaManager {
                     return None;
                 }
 
+                // Query Prometheus /metrics concurrently
+                let metrics_url = format!("http://127.0.0.1:{}/metrics", port);
+                let metrics = match client.get(&metrics_url).send().await {
+                    Ok(m_resp) if m_resp.status().is_success() => {
+                        let text = m_resp.text().await.unwrap_or_default();
+                        Some(parse_prometheus_body(&text))
+                    }
+                    _ => None,
+                };
+
                 let mut model_name = proc_info
                     .as_ref()
                     .map(|(_, m)| m.clone())
@@ -205,7 +242,7 @@ impl MultiLlamaManager {
                     model_name = format!("llama-server:{}", port);
                 }
 
-                Some((port, proc_info.map(|(p, _)| p).unwrap_or(0), model_name, slots))
+                Some((port, proc_info.map(|(p, _)| p).unwrap_or(0), model_name, slots, metrics))
             }));
         }
 
@@ -214,32 +251,56 @@ impl MultiLlamaManager {
         let now = Instant::now();
 
         for task in tasks {
-            if let Ok(Some((port, pid, model_name, mut slots))) = task.await {
+            if let Ok(Some((port, pid, model_name, mut slots, metrics))) = task.await {
                 let mut inst_tps = 0.0;
+                let has_metrics = metrics.is_some();
 
-                for slot in &mut slots {
-                    let key = (port, slot.id);
-
-                    if slot.is_processing {
-                        if let Some(prev) = self.prev_slots.get(&key) {
+                // 1. Calculate authoritative instance speed if Prometheus metrics exist
+                if let Some(ref m) = metrics {
+                    if let Some(predicted) = m.tokens_predicted {
+                        if let Some(prev) = self.prev_metrics.get(&port) {
                             let dt = now.duration_since(prev.timestamp).as_secs_f64();
-                            if dt > 0.1 && slot.n_decoded >= prev.decoded {
-                                let delta_tokens = (slot.n_decoded - prev.decoded) as f64;
-                                let tps = delta_tokens / dt;
-                                if tps > 0.0 {
-                                    slot.calculated_tps = Some(tps);
-                                    inst_tps += tps;
-                                }
+                            if dt > 0.1 && predicted >= prev.tokens_predicted {
+                                let delta = (predicted - prev.tokens_predicted) as f64;
+                                inst_tps = delta / dt;
                             }
                         }
+                        self.prev_metrics.insert(
+                            port,
+                            PrevMetricState {
+                                tokens_predicted: predicted,
+                                timestamp: now,
+                            },
+                        );
+                    }
+                }
 
-                        // Fallback to internal t_token if delta hasn't populated yet
-                        if slot.calculated_tps.is_none() {
-                            if let Some(ms) = slot.t_token {
-                                if ms > 0.0 {
-                                    let tps = 1000.0 / ms;
-                                    slot.calculated_tps = Some(tps);
-                                    inst_tps += tps;
+                // 2. Evaluate slot states and fall back to slot deltas if metrics endpoint wasn't present
+                for slot in &mut slots {
+                    let key = (port, slot.id);
+                    let current_tokens = slot.context_used();
+
+                    if slot.is_processing {
+                        if slot.n_prompt_tokens > 0 && slot.n_prompt_tokens_processed < slot.n_prompt_tokens {
+                            slot.live_state = "PREFILLING";
+                        } else {
+                            slot.live_state = "GENERATING";
+                        }
+
+                        // If metrics endpoint is active and instance is generating, distribute or assign speed
+                        if has_metrics && inst_tps > 0.0 {
+                            slot.calculated_tps = Some(inst_tps);
+                        } else if let Some(prev) = self.prev_slots.get(&key) {
+                            // Fallback: slot delta calculation
+                            let dt = now.duration_since(prev.timestamp).as_secs_f64();
+                            if dt > 0.1 && current_tokens >= prev.total_tokens {
+                                let delta = (current_tokens - prev.total_tokens) as f64;
+                                let slot_tps = delta / dt;
+                                if slot_tps > 0.0 {
+                                    slot.calculated_tps = Some(slot_tps);
+                                    if !has_metrics {
+                                        inst_tps += slot_tps;
+                                    }
                                 }
                             }
                         }
@@ -247,14 +308,14 @@ impl MultiLlamaManager {
                         self.prev_slots.insert(
                             key,
                             PrevSlotState {
-                                decoded: slot.n_decoded,
+                                total_tokens: current_tokens,
                                 timestamp: now,
                             },
                         );
                     } else {
-                        // Slot is idle; reset state tracking
-                        self.prev_slots.remove(&key);
+                        slot.live_state = "IDLE";
                         slot.calculated_tps = None;
+                        self.prev_slots.remove(&key);
                     }
                 }
 
@@ -268,6 +329,7 @@ impl MultiLlamaManager {
                     active_slots: active,
                     total_slots: slots.len(),
                     tokens_per_sec: inst_tps,
+                    has_metrics_endpoint: has_metrics,
                     slots,
                 });
             }

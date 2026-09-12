@@ -127,7 +127,7 @@ fn draw_system_overview(frame: &mut Frame, area: Rect, host: &HostStats, llama: 
     let mut rows = Vec::new();
     for inst in &llama.instances {
         for s in &inst.slots {
-            let state = s.state_str();
+            let state = s.live_state;
             let color = match state {
                 "GENERATING" => GREEN,
                 "PREFILLING" | "BUSY" => YELLOW,
