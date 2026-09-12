@@ -34,7 +34,7 @@ pub fn draw_dashboard(
         .constraints([
             Constraint::Length(3),  // Header bar
             Constraint::Length(10), // Host RAM/CPU & Multi-Instance Slot Table
-            Constraint::Min(12),    // 5-GPU Cards Strip
+            Constraint::Min(12),    // Multi-GPU Cards Strip
         ])
         .split(area);
 
@@ -59,10 +59,6 @@ fn draw_header(frame: &mut Frame, area: Rect, llama: &MultiLlamaStats) {
         Span::styled("v0.1.0 ", Style::default().fg(CYAN)),
         Span::raw("│ "),
         status_span,
-        Span::styled(
-            format!("(Aggregate: {:.1} tok/s)", llama.total_tokens_per_sec),
-            Style::default().fg(Color::Yellow),
-        ),
     ]))
     .block(
         Block::default()
@@ -114,7 +110,7 @@ fn draw_system_overview(frame: &mut Frame, area: Rect, host: &HostStats, llama: 
         .percent(host.cpu_load_percent.clamp(0.0, 100.0) as u16);
     frame.render_widget(cpu_gauge, host_rows[1]);
 
-    // Multi-Server Active Slots Table
+    // Multi-Server Active Slots Table (State removed, extra width given to Model & Context)
     let slots_block = Block::default()
         .title(" Active Models & Server Slots ")
         .borders(Borders::ALL)
@@ -127,37 +123,35 @@ fn draw_system_overview(frame: &mut Frame, area: Rect, host: &HostStats, llama: 
     let mut rows = Vec::new();
     for inst in &llama.instances {
         for s in &inst.slots {
-            let state = s.live_state;
-            let color = match state {
-                "GENERATING" => GREEN,
-                "PREFILLING" | "BUSY" => YELLOW,
-                _ => DIM,
-            };
-
             let ctx_label = if s.n_ctx > 0 {
-                format!("{}/{} ({:.0}%)", s.context_used(), s.n_ctx, (s.context_used() as f64 / s.n_ctx as f64) * 100.0)
+                format!(
+                    "{}/{} ({:.0}%)",
+                    s.context_used(),
+                    s.n_ctx,
+                    (s.context_used() as f64 / s.n_ctx as f64) * 100.0
+                )
             } else {
                 "—".into()
             };
 
-            let speed_label = if let Some(tps) = s.calculated_tps {
-                format!("{:.1} t/s", tps)
+            let (speed_label, speed_color) = if let Some(tps) = s.calculated_tps {
+                (format!("{:.1} t/s", tps), GREEN)
             } else if let Some(t) = s.t_token {
-                format!("{:.1}ms", t)
+                (format!("{:.1}ms", t), GREEN)
             } else {
-                "—".into()
+                ("—".into(), DIM)
             };
 
             rows.push(
                 Row::new(vec![
                     format!(":{}", inst.port),
-                    truncate_str(&inst.model_name, 26),
+                    truncate_str(&inst.model_name, 30),
                     format!("Slot {}", s.id),
-                    state.to_string(),
                     ctx_label,
                     speed_label,
                 ])
-                .style(Style::default().fg(color)),
+                .style(Style::default().fg(if s.is_processing { Color::White } else { DIM }))
+                .bottom_margin(0),
             );
         }
     }
@@ -170,7 +164,6 @@ fn draw_system_overview(frame: &mut Frame, area: Rect, host: &HostStats, llama: 
                 "—",
                 "—",
                 "—",
-                "—",
             ])
             .style(Style::default().fg(DIM)),
         );
@@ -180,15 +173,14 @@ fn draw_system_overview(frame: &mut Frame, area: Rect, host: &HostStats, llama: 
         rows,
         [
             Constraint::Length(7),  // Port
-            Constraint::Length(26), // Model
+            Constraint::Length(32), // Model
             Constraint::Length(8),  // Slot
-            Constraint::Length(12), // State
-            Constraint::Length(18), // Context
-            Constraint::Min(9),     // Speed
+            Constraint::Length(22), // Context
+            Constraint::Min(10),    // Speed
         ],
     )
     .header(
-        Row::new(vec!["Port", "Model", "Slot", "State", "Context", "Speed"])
+        Row::new(vec!["Port", "Model", "Slot", "Context", "Speed"])
             .style(Style::default().fg(CYAN).add_modifier(Modifier::BOLD)),
     );
 
@@ -221,6 +213,13 @@ fn draw_gpus(frame: &mut Frame, area: Rect, gpus: &[GpuDeviceStats]) {
     for (i, gpu) in gpus.iter().enumerate() {
         draw_gpu_card(frame, gpu_columns[i], gpu);
     }
+}
+
+fn clean_gpu_name(name: &str) -> String {
+    name.replace("NVIDIA GeForce ", "")
+        .replace("NVIDIA ", "")
+        .trim()
+        .to_string()
 }
 
 fn draw_gpu_card(frame: &mut Frame, area: Rect, gpu: &GpuDeviceStats) {
@@ -285,11 +284,4 @@ fn truncate_str(s: &str, max_len: usize) -> String {
     } else {
         s.to_string()
     }
-}
-
-fn clean_gpu_name(name: &str) -> String {
-    name.replace("NVIDIA GeForce ", "")
-        .replace("NVIDIA ", "")
-        .trim()
-        .to_string()
 }
