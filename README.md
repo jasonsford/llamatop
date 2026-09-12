@@ -1,192 +1,99 @@
-# mlxtop
+# llamatop
 
-**A `top` for your local LLM on Mac.**
+**A real-time terminal monitor for local LLM inference across multi-GPU NVIDIA rigs.**
 
-See which models are running, how much memory they use, and how busy your Mac’s
-GPU is. With oMLX, you can also follow generation speed and request activity as
-your model responds.
+Track engine-level generation speed, active inference slots, context saturation, and hardware bottlenecks in real time. `llamatop` couples direct NVIDIA hardware telemetry (NVML) with native `llama-server` Prometheus and slot metrics in a dense, low-overhead TUI.
 
-![mlxtop Overview showing a running model, response speed, memory use, and GPU activity](docs/screenshots/overview.jpg)
+[Quick Start](#quick-start) · [Telemetry & Features](#telemetry--features) · [User Guide](docs/USER_GUIDE.md) · [Contributing](CONTRIBUTING.md)
 
-[Try it](#try-it) · [Runtime support](#runtime-support-and-limitations) ·
-[User guide](docs/USER_GUIDE.md) · [Report a bug](https://github.com/maximpri/mlxtop/issues)
+---
 
-## Try it
+## Quick Start
 
-You’ll need an Apple Silicon Mac and a terminal with Unicode and color support.
-The v1.0.0 binary targets macOS 11 or later and was tested on macOS 26.5.1.
-See the [release notes](https://github.com/maximpri/mlxtop/releases/tag/v1.0.0)
-for compatibility details.
+### Clone and build locally:
 
-[**Download the macOS disk image (.dmg)**](https://github.com/maximpri/mlxtop/releases/download/v1.0.0/mlxtop-1.0.0-aarch64-apple-darwin.dmg).
-Open it, double-click **Install mlxtop.pkg**, and follow the installer. Then
-open Terminal and run `mlxtop`. This installs in `/usr/local/bin` and requires
-an administrator account. The package is unsigned and not Apple notarized.
-
-### Install from Terminal
-
-To install in your home directory without sudo:
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/maximpri/mlxtop/main/scripts/install.sh | sh
+```bash
+git clone [https://github.com/jasonsford/llamatop.git](https://github.com/jasonsford/llamatop.git)
+cd llamatop
+cargo build --release
+./target/release/llamatop
 ```
 
-The installer checks the download’s SHA-256 checksum and places `mlxtop` in
-`~/.local/bin`. No Rust toolchain or sudo is needed. Then run:
+*(Note: Cross-platform development is fully supported on Windows and macOS via fallback mocks; live NVML and Linux paging telemetry activate automatically when running on Linux with proprietary NVIDIA drivers installed).*
 
-```sh
-~/.local/bin/mlxtop
+### Launching `llama-server` with Metrics
+
+To enable full throughput tracking, Time-To-First-Token (TTFT), and context load counters, launch `llama-server` with the `--metrics` flag:
+
+```bash
+llama-server \
+  -m /models/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf \
+  --ctx-size 16384 \
+  --n-gpu-layers 99 \
+  --parallel 4 \
+  --metrics \
+  --port 8080
 ```
 
-Add `~/.local/bin` to your `PATH` to run it as `mlxtop` from any terminal.
+### Running `llamatop`
 
-## Usage
+```bash
+# Monitor local server on default port 8080
+llamatop
 
-You should see live memory and GPU readings as soon as the dashboard opens.
-It works without a model running, so you can look around before starting one.
-Once mlxtop detects a supported runtime, it adds the available model information.
-oMLX provides the most detail, including response speed and request activity.
-
-### Watch it during a conversation
-
-1. Leave mlxtop open and send a message to your local model. Any short prompt
-   will do, such as “Explain how a rainbow forms in three sentences.”
-2. Watch Overview while the model responds. You’ll see memory and GPU activity.
-   With live oMLX data, you’ll also see how fast it processes your prompt and
-   writes the answer.
-3. Press `2` to inspect model processes or `3` to open the event journal.
-   Press `q` when you’re done.
-
-The numbers will depend on your Mac, model, and prompt. A dash in the dashboard
-means a measurement isn’t available. Response speed requires a runtime that
-reports it.
-
-For a text report you can use in a terminal or over SSH:
-
-```sh
-~/.local/bin/mlxtop --once
+# Monitor a specific port or custom interval
+llamatop --port 8080 --interval 1
 ```
 
-This prints memory, paging, GPU, and available model information, then exits.
-If you used the macOS installer or Cargo, use `mlxtop --once` instead.
+---
 
-You don’t need an account or a cloud API key. Use whatever local model you
-already have running. mlxtop doesn’t download models or send prompts for you.
-Installation needs internet access to download the release, or the source and
-Rust dependencies if you build it yourself.
-If your oMLX server requires a key, follow the
-[runtime setup guide](docs/USER_GUIDE.md#omlx-telemetry).
+## Telemetry & Features
 
-### Views and controls
+| Telemetry Pane | Sourced Via | Key Metrics Tracked |
+| --- | --- | --- |
+| **Host System** | `sysinfo` & `/proc/vmstat` | Host CPU %, RAM allocation, swap memory, and kernel swap page-in/page-out rates (`MB/s`). |
+| **NVIDIA Multi-GPU** | Direct NVML (`nvml-wrapper`) | Per-GPU VRAM usage, Streaming Multiprocessor (SM) % sparklines, Memory Bus % sparklines, core temp, dynamic power draw vs. TDP, and PCIe TX/RX throughput. |
+| **Inference Server** | `llama-server` HTTP / Prometheus | Active vs. total parallel slots (`/slots`), KV context load high-water mark, live token generation throughput (`tok/s`), and TTFT latency. |
+| **Process Mapping** | System process tables | Automatic correlation of listening server ports to OS PIDs and associated physical GPUs. |
 
-Use mlxtop to see whether a slow reply coincides with a busy GPU or your Mac
-moving memory to disk. It’s also useful for watching memory use as you try a
-larger model or work through a longer conversation.
+### Diagnostic Signals
 
-| View | What it shows |
-| --- | --- |
-| Overview | Model status, response speed when available, memory use, and GPU activity |
-| MLX Top | Running model processes and the resources they use |
-| Journal | Request activity and changes in resource use during the session |
+- **Memory Bus vs. Compute (SM):** Autoregressive token decoding is typically memory-bandwidth bound. Independent sparklines make it obvious whether your GPUs are stalled on memory bus transfers or saturated on compute cores.
+- **Kernel Paging Delays:** Spike in swap page-in/out rates on Linux indicates that model weights, KV caches, or system buffers have spilled into disk swap, causing catastrophic latency spikes.
+- **PCIe Saturation:** High PCIe RX/TX throughput highlights pipeline stalls during prompt prefill or tensor exchange across multi-GPU risers.
 
-Here’s the Journal during an oMLX session:
+---
 
-![mlxtop Journal showing timestamped model requests, queue changes, and GPU events](docs/screenshots/journal.jpg)
-
-Both screenshots show oMLX workloads. The numbers illustrate the display and
-aren’t benchmarks.
+## Controls
 
 | Key | Action |
 | --- | --- |
-| `1` / `2` / `3` | Open Overview / MLX Top / Journal |
-| `Tab` | Switch views |
-| `p` / `Space` | Pause or resume sampling |
-| `+` / `-` | Change refresh interval |
-| `?` | Show help |
-| `q` | Quit |
+| `q` / `Esc` / `Ctrl-C` | Exit cleanly and restore terminal raw mode |
+| `+` / `=` | Increase refresh rate (shorter interval) |
+| `-` | Decrease refresh rate (longer interval) |
+| `Space` / `p` | Pause or resume real-time sampling |
+| `r` | Reset rolling sparkline history |
 
-The [user guide](docs/USER_GUIDE.md#controls) covers process filtering, sorting,
-and journal navigation.
+---
 
-<details>
-<summary>Build from source</summary>
+## Privacy & Threat Model
 
-If you prefer to build it yourself, you’ll need Rust 1.88 or newer with Cargo
-and Git:
+- **Local-First & Read-Only:** `llamatop` queries local loopback sockets (`127.0.0.1`) and native kernel/driver interfaces. It never issues synthetic inference requests, modifies process priorities, or changes driver settings.
+- **Zero Prompt/Output Inspection:** `llamatop` monitors quantitative operational telemetry only. It never captures, logs, or inspects model prompts, completion text, or weights.
+- **No Remote Telemetry:** Contains no third-party trackers, analytics, or background phone-home routines.
 
-```sh
-git clone https://github.com/maximpri/mlxtop.git
-cd mlxtop
-cargo install --path . --locked
-mlxtop
-```
+See [SECURITY.md](SECURITY.md) for vulnerability reporting and detailed security boundaries.
 
-If your shell can’t find `mlxtop`, run `~/.cargo/bin/mlxtop` or add
-`~/.cargo/bin` to your `PATH`.
+---
 
-</details>
+## Acknowledgments & Lineage
 
-## Runtime support and limitations
+`llamatop` is a Linux-native, multi-GPU evolution inspired by [`mlxtop`](https://github.com/maximpri/mlxtop), originally created by **Maxim Priezjev** for Apple Silicon. 
 
-mlxtop is built for macOS on Apple Silicon. Linux, Windows, and Intel Macs
-aren’t supported targets for this release.
+While the architecture has been rewritten for Linux kernels, NVIDIA NVML bindings, and `llama.cpp` server environments, `llamatop` retains `mlxtop`'s core philosophy: clean TUI presentation, zero-overhead observability, causal temporal tracking, and truthful telemetry without fabricated averages.
 
-| Runtime | Available information |
-| --- | --- |
-| oMLX | Models, processes, prompt and response speed, requests, cache activity, and extra memory counters when available |
-| MLX-LM | Process information alongside system memory and GPU readings |
-| Ollama, llama.cpp / llama-server, LM Studio, KoboldCpp, LocalAI | Process detection. Live response speed and request metrics aren’t supported yet. |
-
-The oMLX connection defaults to `127.0.0.1:8080` and reads settings from
-`~/.config/omlx-coding/server.env`. If you’re missing live readings, check the
-[setup guide](docs/USER_GUIDE.md#omlx-telemetry).
-
-The available readings depend on your runtime. Missing measurements are shown
-as unavailable. GPU activity reflects the whole system, not individual models.
-mlxtop never estimates response speed from CPU or GPU use. When live oMLX data
-is unavailable, it may use recent completion logs and show how old those readings
-are.
-
-The dashboard can help you spot a slowdown and the conditions around it, but
-it can’t prove what caused it. The Journal only covers the current session.
-
-## Privacy and local access
-
-mlxtop runs without sudo and has no analytics. It reads system counters,
-process information, and supported provider APIs and logs. Your project files
-and model settings stay untouched, and it doesn’t send inference requests.
-
-Diagnostic logs are saved locally at `~/Library/Logs/mlxtop/mlxtop.log`. They
-include counters and model or provider names, but exclude prompts, model output,
-request bodies, and API keys. These logs aren’t uploaded. By default, provider
-credentials are sent only to endpoints on your own machine.
-
-See the [data sources](docs/USER_GUIDE.md#data-sources-and-privacy),
-[crash diagnostics](docs/USER_GUIDE.md#crash-diagnostics), and
-[security policy](SECURITY.md) for details.
-
-## Help and contributions
-
-The [user guide](docs/USER_GUIDE.md) covers setup, controls, troubleshooting,
-and the readings in each view. The [roadmap](https://github.com/maximpri/mlxtop/blob/main/OPEN_SOURCE_ROADMAP.md) describes
-planned work.
-
-If something breaks, [open an issue](https://github.com/maximpri/mlxtop/issues)
-with your mlxtop version (`mlxtop --version`), macOS version, Mac model, runtime,
-and steps to reproduce it. Remove private data from screenshots and logs.
-Use [SECURITY.md](SECURITY.md) to report a vulnerability.
-
-Documentation fixes, bug reports, and provider adapters are welcome. If a setup
-step tripped you up, improving it is a useful place to start. Read
-[CONTRIBUTING.md](CONTRIBUTING.md) for development checks and design guidelines.
-For larger changes, open an issue first so we can discuss the approach.
-
-## Acknowledgments
-
-mlxtop was developed with Duet coding agent.
+---
 
 ## License
 
-[MIT](LICENSE). Dependencies keep their [own licenses](THIRD_PARTY_NOTICES.md).
-Contributions use the same MIT terms. mlxtop is an independent project and
-isn’t an Apple product.
+Distributed under the [MIT License](LICENSE). Third-party dependencies retain their upstream licenses as documented in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

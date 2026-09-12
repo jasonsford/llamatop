@@ -1,21 +1,24 @@
 ---
 name: Feature request
-about: Suggest an improvement or provider adapter
+about: Suggest an improvement, new telemetry metric, or provider adapter
 title: ""
-labels: ""
+labels: "enhancement"
 assignees: ""
 ---
 
 ## User problem
 
-What are you trying to understand or accomplish?
+What monitoring, telemetry, or hardware observation problem are you trying to solve?
 
 ## Proposed behavior
 
-Describe the change and any alternatives you considered.
+Describe the proposed change, how it surfaces in the TUI, and any alternative designs you considered.
 
-## Telemetry source (for new metrics or providers)
+## Telemetry source & interfaces
 
-Link to the provider's API or counter documentation, if available. Describe
-how unavailable or stale data should appear. Do not include credentials or
-private workload data.
+If proposing new hardware metrics or an inference provider adapter (e.g., vLLM, Ollama, TGI):
+- Link to the official API, Prometheus metrics endpoint, or NVML/kernel counter documentation.
+- How should unavailable, unprivileged, or stale data be presented (`—`, dimmed, or omitted)?
+- Does collecting this metric incur noticeable CPU/GPU overhead during active inference?
+
+*Note: Do not include API keys, private hostnames, or confidential prompts/logs in your request.*

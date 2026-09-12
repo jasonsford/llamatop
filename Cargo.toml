@@ -2,7 +2,7 @@
 name = "llamatop"
 version = "0.1.0"
 edition = "2021"
-description = "A terminal-based top monitor for llama.cpp and multi-GPU setups on Linux based on https://github.com/maximpri/mlxtop"
+description = "A real-time TUI monitor for llama.cpp and multi-GPU NVIDIA Linux servers, inspired by mlxtop"
 license = "MIT"
 readme = "README.md"
 repository = "https://github.com/jasonsford/llamatop"
@@ -28,3 +28,15 @@ sysinfo = "0.33"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 nvml-wrapper = "0.10"
+
+# Optimization profiles
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[profile.dev]
+opt-level = 0
+debug = true

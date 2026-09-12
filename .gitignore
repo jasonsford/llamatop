@@ -1,20 +1,13 @@
-# Claude Code local state: per-machine permission allowlist and session
-# checkpoints. Not project configuration -- nothing here is reproducible or
-# meaningful on another machine.
-.claude/
+# Rust build artifacts
 target/
+**/*.rs.bk
+*.pdb
 
-# Local editor and agent state
-.codex/
-.opencode/
-.idea/
-.vscode/
+# Cargo local state (keep Cargo.lock tracked for binary crates)
+.cargo/config.toml.local
+.cargo/*.local
 
-# macOS metadata
-.DS_Store
-._*
-
-# Local credentials and diagnostics
+# Local credentials, certificates, and diagnostics
 .env
 .env.*
 !.env.example
@@ -38,6 +31,31 @@ ssh_host_*_key.pub
 authorized_keys
 known_hosts
 
-# Python helper caches
+# OS & Filesystem metadata
+.DS_Store
+._*
+Thumbs.db
+desktop.ini
+
+# IDE & Editor state
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# AI agent & assistant state
+.claude/
+.codex/
+.opencode/
+
+# Crash dumps & profiling artifacts
+core
+core.*
+vgcore.*
+perf.data
+perf.data.old
+
 __pycache__/
 *.py[cod]
+*$py.class

@@ -46,9 +46,15 @@ impl HostCollector {
 
         for line in content.lines() {
             if line.starts_with("pgpgin ") {
-                cur_pgin = line.split_whitespace().nth(1).and_then(|v| v.parse::<u64>().ok());
+                cur_pgin = line
+                    .split_whitespace()
+                    .nth(1)
+                    .and_then(|v| v.parse::<u64>().ok());
             } else if line.starts_with("pgpgout ") {
-                cur_pgout = line.split_whitespace().nth(1).and_then(|v| v.parse::<u64>().ok());
+                cur_pgout = line
+                    .split_whitespace()
+                    .nth(1)
+                    .and_then(|v| v.parse::<u64>().ok());
             }
         }
 

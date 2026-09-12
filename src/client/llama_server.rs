@@ -142,7 +142,8 @@ impl MultiLlamaManager {
     }
 
     fn scan_processes(&mut self) -> HashMap<u16, (u32, String)> {
-        self.sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
+        self.sys
+            .refresh_processes(sysinfo::ProcessesToUpdate::All, true);
         let mut map = HashMap::new();
 
         for (pid, process) in self.sys.processes() {
@@ -242,7 +243,13 @@ impl MultiLlamaManager {
                     model_name = format!("llama-server:{}", port);
                 }
 
-                Some((port, proc_info.map(|(p, _)| p).unwrap_or(0), model_name, slots, metrics))
+                Some((
+                    port,
+                    proc_info.map(|(p, _)| p).unwrap_or(0),
+                    model_name,
+                    slots,
+                    metrics,
+                ))
             }));
         }
 
@@ -281,7 +288,9 @@ impl MultiLlamaManager {
                     let current_tokens = slot.context_used();
 
                     if slot.is_processing {
-                        if slot.n_prompt_tokens > 0 && slot.n_prompt_tokens_processed < slot.n_prompt_tokens {
+                        if slot.n_prompt_tokens > 0
+                            && slot.n_prompt_tokens_processed < slot.n_prompt_tokens
+                        {
                             slot.live_state = "PREFILLING";
                         } else {
                             slot.live_state = "GENERATING";

@@ -47,15 +47,27 @@ fn draw_header(frame: &mut Frame, area: Rect, llama: &MultiLlamaStats) {
     let count = llama.instances.len();
     let status_span = if count > 0 {
         Span::styled(
-            format!(" ● {} INSTANCE{} ONLINE ", count, if count > 1 { "S" } else { "" }),
+            format!(
+                " ● {} INSTANCE{} ONLINE ",
+                count,
+                if count > 1 { "S" } else { "" }
+            ),
             Style::default().fg(GREEN).add_modifier(Modifier::BOLD),
         )
     } else {
-        Span::styled(" ○ NO SERVERS DETECTED ", Style::default().fg(RED).add_modifier(Modifier::BOLD))
+        Span::styled(
+            " ○ NO SERVERS DETECTED ",
+            Style::default().fg(RED).add_modifier(Modifier::BOLD),
+        )
     };
 
     let title = Paragraph::new(Line::from(vec![
-        Span::styled(" llamatop ", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            " llamatop ",
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::styled("v0.1.0 ", Style::default().fg(CYAN)),
         Span::raw("│ "),
         status_span,
@@ -118,8 +130,15 @@ fn draw_system_overview(frame: &mut Frame, area: Rect, host: &HostStats, llama: 
     frame.render_widget(ram_gauge, host_rows[0]);
 
     let swap_gauge = Gauge::default()
-        .block(Block::default().title(format!("Swap: {:.1}/{:.1} GiB", swap_used_gb, swap_total_gb)))
-        .gauge_style(Style::default().fg(if swap_pct > 50 { RED } else { YELLOW }).bg(DIM))
+        .block(Block::default().title(format!(
+            "Swap: {:.1}/{:.1} GiB",
+            swap_used_gb, swap_total_gb
+        )))
+        .gauge_style(
+            Style::default()
+                .fg(if swap_pct > 50 { RED } else { YELLOW })
+                .bg(DIM),
+        )
         .percent(swap_pct);
     frame.render_widget(swap_gauge, host_rows[1]);
 
@@ -131,8 +150,22 @@ fn draw_system_overview(frame: &mut Frame, area: Rect, host: &HostStats, llama: 
 
     let paging_line = Paragraph::new(Line::from(vec![
         Span::styled("Paging I/O: ", Style::default().fg(DIM)),
-        Span::styled(format!("▼ {:.1} MB/s in  ", host.page_in_mb_s), Style::default().fg(if host.page_in_mb_s > 5.0 { RED } else { Color::White })),
-        Span::styled(format!("▲ {:.1} MB/s out", host.page_out_mb_s), Style::default().fg(if host.page_out_mb_s > 5.0 { RED } else { Color::White })),
+        Span::styled(
+            format!("▼ {:.1} MB/s in  ", host.page_in_mb_s),
+            Style::default().fg(if host.page_in_mb_s > 5.0 {
+                RED
+            } else {
+                Color::White
+            }),
+        ),
+        Span::styled(
+            format!("▲ {:.1} MB/s out", host.page_out_mb_s),
+            Style::default().fg(if host.page_out_mb_s > 5.0 {
+                RED
+            } else {
+                Color::White
+            }),
+        ),
     ]));
     frame.render_widget(paging_line, host_rows[3]);
 
@@ -150,7 +183,12 @@ fn draw_system_overview(frame: &mut Frame, area: Rect, host: &HostStats, llama: 
     for inst in &llama.instances {
         for s in &inst.slots {
             let ctx_label = if s.n_ctx > 0 {
-                format!("{}/{} ({:.0}%)", s.context_used(), s.n_ctx, (s.context_used() as f64 / s.n_ctx as f64) * 100.0)
+                format!(
+                    "{}/{} ({:.0}%)",
+                    s.context_used(),
+                    s.n_ctx,
+                    (s.context_used() as f64 / s.n_ctx as f64) * 100.0
+                )
             } else {
                 "—".into()
             };
@@ -170,20 +208,19 @@ fn draw_system_overview(frame: &mut Frame, area: Rect, host: &HostStats, llama: 
                     ctx_label,
                     speed_label,
                 ])
-                .style(Style::default().fg(if s.is_processing { Color::White } else { DIM })),
+                .style(Style::default().fg(if s.is_processing {
+                    Color::White
+                } else {
+                    DIM
+                })),
             );
         }
     }
 
     if rows.is_empty() {
         rows.push(
-            Row::new(vec![
-                "—",
-                "No active server instances found",
-                "—",
-                "—",
-            ])
-            .style(Style::default().fg(DIM)),
+            Row::new(vec!["—", "No active server instances found", "—", "—"])
+                .style(Style::default().fg(DIM)),
         );
     }
 
@@ -242,7 +279,11 @@ fn clean_gpu_name(name: &str) -> String {
 fn draw_gpu_card(frame: &mut Frame, area: Rect, gpu: &GpuDeviceStats, llama: &MultiLlamaStats) {
     let clean_name = clean_gpu_name(&gpu.name);
     let card = Block::default()
-        .title(format!(" [{}] {} ", gpu.index, truncate_str(&clean_name, 18)))
+        .title(format!(
+            " [{}] {} ",
+            gpu.index,
+            truncate_str(&clean_name, 18)
+        ))
         .borders(Borders::ALL)
         .border_style(Style::default().fg(CYAN))
         .style(Style::default().bg(PANEL));
@@ -296,19 +337,29 @@ fn draw_gpu_card(frame: &mut Frame, area: Rect, gpu: &GpuDeviceStats, llama: &Mu
     frame.render_widget(mem_spark, rows[2]);
 
     // 4. Temp & Power Details
-    let details = Paragraph::new(vec![
-        Line::from(vec![
-            Span::styled(format!("{}°C ", gpu.temp_c), Style::default().fg(if gpu.temp_c > 80 { RED } else { GREEN })),
-            Span::styled(format!("{:.0}W/{:.0}W", gpu.power_watts, gpu.power_limit_watts), Style::default().fg(Color::White)),
-        ]),
-    ]);
+    let details = Paragraph::new(vec![Line::from(vec![
+        Span::styled(
+            format!("{}°C ", gpu.temp_c),
+            Style::default().fg(if gpu.temp_c > 80 { RED } else { GREEN }),
+        ),
+        Span::styled(
+            format!("{:.0}W/{:.0}W", gpu.power_watts, gpu.power_limit_watts),
+            Style::default().fg(Color::White),
+        ),
+    ])]);
     frame.render_widget(details, rows[3]);
 
     // 5. PCIe Throughput
     let pcie_line = Paragraph::new(Line::from(vec![
         Span::styled("PCIe: ", Style::default().fg(DIM)),
-        Span::styled(format!("TX {:.0}M ", gpu.pcie_tx_mb_s), Style::default().fg(Color::White)),
-        Span::styled(format!("RX {:.0}M", gpu.pcie_rx_mb_s), Style::default().fg(Color::White)),
+        Span::styled(
+            format!("TX {:.0}M ", gpu.pcie_tx_mb_s),
+            Style::default().fg(Color::White),
+        ),
+        Span::styled(
+            format!("RX {:.0}M", gpu.pcie_rx_mb_s),
+            Style::default().fg(Color::White),
+        ),
     ]));
     frame.render_widget(pcie_line, rows[4]);
 
@@ -337,7 +388,12 @@ fn draw_gpu_card(frame: &mut Frame, area: Rect, gpu: &GpuDeviceStats, llama: &Mu
 
 fn truncate_str(s: &str, max_len: usize) -> String {
     if s.chars().count() > max_len {
-        format!("{}…", &s.chars().take(max_len.saturating_sub(1)).collect::<String>())
+        format!(
+            "{}…",
+            &s.chars()
+                .take(max_len.saturating_sub(1))
+                .collect::<String>()
+        )
     } else {
         s.to_string()
     }

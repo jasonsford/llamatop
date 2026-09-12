@@ -1,8 +1,8 @@
-use std::collections::{HashMap, VecDeque};
 use super::{GpuDeviceStats, GpuProcessInfo, HardwareCollector, HostStats};
 use crate::telemetry::host::HostCollector;
 use nvml_wrapper::enum_wrappers::device::{PcieUtilCounter, TemperatureSensor};
 use nvml_wrapper::Nvml;
+use std::collections::{HashMap, VecDeque};
 
 pub struct NvmlCollector {
     host: HostCollector,
@@ -55,13 +55,19 @@ impl HardwareCollector for NvmlCollector {
                 let mem_u = util.as_ref().map(|u| u.memory).unwrap_or(0) as u64;
 
                 // Rolling Sparkline History (last 30 samples)
-                let c_hist = self.compute_histories.entry(i).or_insert_with(|| VecDeque::with_capacity(30));
+                let c_hist = self
+                    .compute_histories
+                    .entry(i)
+                    .or_insert_with(|| VecDeque::with_capacity(30));
                 if c_hist.len() >= 30 {
                     c_hist.pop_front();
                 }
                 c_hist.push_back(gpu_u);
 
-                let m_hist = self.memory_histories.entry(i).or_insert_with(|| VecDeque::with_capacity(30));
+                let m_hist = self
+                    .memory_histories
+                    .entry(i)
+                    .or_insert_with(|| VecDeque::with_capacity(30));
                 if m_hist.len() >= 30 {
                     m_hist.pop_front();
                 }

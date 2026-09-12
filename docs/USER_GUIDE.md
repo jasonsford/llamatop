@@ -1,248 +1,100 @@
-# mlxtop user guide
+# llamatop User Guide
 
-[Back to the README](../README.md) · [Quick start](../README.md#try-it)
+[Back to the README](../README.md) · [Contributing Guide](../CONTRIBUTING.md) · [Security Policy](../SECURITY.md)
 
-Detailed controls, runtime setup, and explanations of the dashboard readings.
+Comprehensive controls, runtime configuration, telemetry metrics, and architectural explanations for `llamatop`.
 
-## What it shows
+---
 
-| View | Question answered | Key information |
-| --- | --- | --- |
-| Overview | Is inference healthy, and what limits it now? | Generation/prefill rate, diagnosis, cache/queue, memory, paging/compression and GPU |
-| MLX Top | Which process owns the workload? | PID, command, model, CPU, memory %, RSS, page-ins and serving state |
-| Journal | What changed during this session? | Request lifecycle, provider/model changes, paging, pressure, compression, GPU, thermal and recovery events |
+## Overview & Dashboard Layout
 
-Overview uses a balanced six-chart layout: generation, prefill and cache on the
-first row; GPU, memory load and paging on the second. Each series keeps its own
-unit and scale, so token rates are never visually mixed with percentages. Each
-series is rendered as a stepped trace over a fixed-width tail of the ring
-buffer: one terminal column represents one captured sample, new samples enter
-from the right, and the oldest samples leave from the left once the viewport is
-full. The generation and prefill axes use stable scales so a new peak cannot
-move older values vertically. Rate traces use only active request telemetry,
-and cache traces use the current sample's counter delta; cumulative session
-averages are kept in the headline cards, not drawn as realtime samples.
-Missing, stale, idle, or completion-log-only rate samples remain gaps, and the
-chart title identifies the other active phase when a request is prefilling or
-decoding.
-A trace keeps the severity tone recorded with its sample, so a later refresh
-cannot recolor or rewrite history. For readability, the plotted position uses
-a causal deadband derived from the chart's drawable row resolution: movement of
-at most a quarter-row is held at the prior plotted level, while larger changes
-and spikes pass through immediately. The calculation uses only the samples up
-to each point, so future samples never change an older plotted point. Raw values
-remain the source for headlines and statistics. The tone is only a secondary
-visual cue:
-visible labels use meaningful states such as `normal`,
-`watch`, `critical`, `loaded` and `saturated` rather than asking users to
-interpret color names. On narrower terminals, the detailed cards collapse
-into an operational strip instead of truncating critical data. Journal records
-transitions rather than duplicating the live process table.
+`llamatop` provides a unified, real-time TUI dashboard split into functional telemetry panes designed specifically for monitoring local LLM inference across multi-GPU NVIDIA rigs on Linux (with cross-platform local development support on Windows and macOS).
 
-## Throughput correlation
+---
 
-When live provider telemetry reports a material generation-rate change,
-mlxtop compares it with a short baseline for the same provider and model. It
-then ranks signals observed in the same sample: paging, macOS memory pressure,
-compression churn, thermal limiting, GPU saturation, Metal memory occupancy,
-queue depth, model-memory growth and context/KV growth.
+## Telemetry Panes & Metrics Explained
 
-The Overview and MLX Top diagnosis cards keep the strongest evidence beside
-the affected throughput, for example:
+### 1. Host System & Kernel Paging
+- **CPU & System RAM:** Gathered via `sysinfo`. High host CPU usage often indicates token prefill preprocessing, prompt template formatting, tokenization, or CPU-offloaded layers.
+- **Swap Allocation & Kernel Paging:** Queried directly from `/proc/vmstat` (`pswpin` and `pswpout`) on Linux. When host RAM exhausts and context data or model weights spill into swap memory, paging activity spikes, resulting in severe inference throughput drops.
 
-```text
-GEN ↓16.7% (30.0→25.0 tok/s) · correlated: GPU 99% busy + context +11.7k → 32.2k
-```
+### 2. NVIDIA GPU Telemetry (Direct NVML)
+On Linux systems, `llamatop` queries the official NVIDIA Management Library (`NVML`) directly:
+- **VRAM Allocation:** Real-time allocated video memory versus physical hardware capacity.
+- **Compute (SM) Utilization:** Percentage of Streaming Multiprocessors actively executing CUDA kernels, tracked across a 30-sample rolling sparkline.
+- **Memory Bus Utilization:** Percentage of time the physical memory controller is busy. Memory bandwidth is typically the primary bottleneck during LLM autoregressive token generation (decoding phase).
+- **PCIe Bus Bandwidth:** Host-to-device (TX) and device-to-host (RX) throughput in MB/s. Useful for detecting bottlenecks during initial model layer weight transfers, dynamic context ingestion, or multi-GPU pipeline tensor transfers across PCIe risers.
+- **Thermal & Power Draw:** Core temperatures (°C) and dynamic power consumption (Watts) relative to configured TDP caps.
 
-This is correlation, not a claim that one counter proves causation. If no
-tracked system signal moved with the rate, the dashboard says so and points to
-workload or runtime scheduling as the remaining explanation. A throughput
-diagnosis is recorded once per change in the Journal, rather than once per
-refresh.
+### 3. Engine & Server Telemetry (`llama-server`)
+`llamatop` inspects active inference engine metrics:
+- **Active / Total Slots:** Concurrent generation requests compared to total initialized slots (`--parallel`).
+- **Context Capacity:** KV-cache token consumption across active slots relative to configured `--ctx-size`.
+- **Generation Speed:** Real-time token generation throughput (`tokens/sec`) and Time-To-First-Token (`TTFT`) latency scraped from the Prometheus `/metrics` endpoint.
+- **Process & Model Attribution:** Maps active Linux process IDs (`PIDs`) running `llama-server` to their listening ports, model filenames, and associated physical GPUs.
 
-## oMLX telemetry
+---
 
-The oMLX adapter checks `http://127.0.0.1:8080/health` by default and discovers
-the configured host, port and optional API key from:
-
-```text
-~/.config/omlx-coding/server.env
-```
-
-When the local admin API is available, values are marked `LIVE`. If it is not,
-mlxtop may use the latest structured completion record from these logs and
-labels that fallback with its age:
-
-```text
-~/.omlx-coding/logs/server.log
-~/.omlx-coding/logs/launchd.stdout.log
-~/.omlx-coding/logs/launchd.stderr.log
-```
-
-API credentials are sent only to loopback endpoints by default. To use an
-intentionally remote oMLX endpoint, set `MLXTOP_ALLOW_REMOTE_AUTH=1` and use a
-trusted, protected network path.
-
-## MLX and Metal telemetry
-
-MLX allocator state belongs to the serving process. When an oMLX-compatible
-endpoint exposes it, mlxtop displays the three counters separately:
-
-- **active** — bytes currently held by live MLX arrays;
-- **cache** — bytes retained by MLX's allocator pool; and
-- **peak** — the process-local MLX peak since the runtime reset it.
-
-The adapter also reads oMLX device/settings metadata when available, including
-the MLX device name, architecture, unified-memory size, recommended working
-set, maximum buffer size, process footprint and effective Metal limit. The
-current model-memory and runtime-cache figures remain separate from allocator
-memory so the dashboard does not double-count them.
-
-On Apple Silicon, Metal telemetry is collected locally without sudo from
-`ioreg`: device name, GPU core count, device/renderer/tiler utilization and
-Metal system-memory allocation. `hw.machine` and `iogpu.wired_limit_mb` add
-the architecture and explicit wired limit when the operating system exposes
-them. Missing individual counters are shown as `—`, while a wholly unavailable
-allocator group is summarized as `allocator counters not exposed`; RSS, GPU
-load and model memory are never substituted for it.
-
-## Controls
-
-### Global
+## Interactive Controls
 
 | Key | Action |
 | --- | --- |
-| `1` / `o` | Overview |
-| `2` / `t` | MLX Top |
-| `3` / `j` | Journal |
-| `Tab` / `←` / `→` | Switch views |
-| `p` / `Space` | Pause or resume sampling |
-| `r` | Reset rates, charts and journal |
-| `+` / `-` | Change refresh interval |
-| `?` / `h` | Help |
-| `q` / `Esc` / `Ctrl-C` | Quit |
+| `q` / `Esc` / `Ctrl-C` | Exit cleanly and restore terminal raw mode |
+| `+` / `=` | Increase polling frequency (shorter interval) |
+| `-` | Decrease polling frequency (longer interval) |
+| `Space` / `p` | Pause or resume real-time sampling |
+| `r` | Reset rolling sparkline history |
 
-### MLX Top
+---
 
-| Key | Action |
-| --- | --- |
-| `↑` / `↓` | Select a process |
-| `PgUp` / `PgDn` | Move by ten processes |
-| `Home` / `End` | First or last process |
-| `s` | Cycle sort: RSS, CPU, PID, name |
-| `f` / `/` | Enter a text filter |
-| `c` | Clear the filter |
+## Command-Line Usage
 
-### Journal
-
-| Key | Action |
-| --- | --- |
-| `↑` / `PgUp` / `Home` | Move toward newer events |
-| `↓` / `PgDn` / `End` | Move toward older events |
-| `f` / `]` | Next event filter |
-| `[` | Previous event filter |
-
-## Command-line options
-
-```text
--i, --interval N   refresh interval in seconds, 1–60 (default: 1)
--n, --history N    chart/journal history, 20–3600 (default: 300)
--1, --once         print a static report and exit
--V, --version      print the installed version and exit
--h, --help         show help
+```bash
+llamatop [OPTIONS]
 ```
 
-## Crash diagnostics
+### Options
 
-Every run writes a small local diagnostic log to:
+| Flag | Option | Description | Default |
+| --- | --- | --- | --- |
+| `-p` | `--port <PORT>` | Target port of `llama-server` instance | `8080` |
+| `-H` | `--host <HOST>` | Target hostname or IP address | `127.0.0.1` |
+| `-i` | `--interval <SECS>` | Telemetry refresh interval in seconds | `1` |
+| `-h` | `--help` | Print command-line help information | — |
+| `-V` | `--version` | Print installed version | — |
 
-```text
-~/Library/Logs/mlxtop/mlxtop.log
+---
+
+## Configuring `llama-server` for Full Telemetry
+
+To enable engine-level token throughput, TTFT latency, and slot context counters, start `llama-server` with the `--metrics` flag:
+
+```bash
+llama-server \
+  -m /models/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf \
+  --ctx-size 16384 \
+  --n-gpu-layers 99 \
+  --parallel 4 \
+  --metrics \
+  --port 8080
 ```
 
-Follow it while reproducing a crash:
+> **Note:** If `llama-server` is started without `--metrics`, `llamatop` degrades gracefully: it will continue monitoring VRAM, SM compute, memory bus, and slot status via `/slots`, displaying `—` for metric counters that are not exposed.
 
-```sh
-tail -f ~/Library/Logs/mlxtop/mlxtop.log
-```
+---
 
-Set `MLXTOP_LOG_PATH` to use another path. The log records session lifecycle,
-sampling duration, provider/API availability, sampler failures, terminal
-errors and panic backtraces. A normal shutdown ends with `event=process_exit`;
-if that record is missing, the process was interrupted or crashed. The active
-log is capped at 8 MiB and rotated once to `mlxtop.log.1`.
+## Multi-GPU Topologies
 
-It contains counters and model/provider names for diagnosis, but never prompts,
-model output, request bodies or provider API keys. Diagnostics are local-only
-and are not uploaded.
+`llamatop` enumerates all available NVIDIA GPUs via NVML:
+- Supports asymmetric multi-GPU setups (e.g., pairing RTX 3080 and RTX 4060 Ti series).
+- Displays individual per-card sparklines for both compute utilization and memory bus activity.
+- Dynamically scales GPU cards across terminal columns to match viewport dimensions.
 
-## Data sources and privacy
+---
 
-mlxtop reads macOS counters from `sysctl`, `memory_pressure`, `vm_stat`,
-`ioreg`, `pmset` and `ps`. It reads local provider endpoints and logs only for
-supported adapters. The application does not contain analytics, upload
-collected metrics, modify model state or send synthetic inference requests.
+## Privacy & Security
 
-Provider credentials are read only when needed and are never displayed. See
-[SECURITY.md](../SECURITY.md) for responsible vulnerability reporting and the
-remote-authentication boundary.
-
-## Development
-
-Run the same checks used by CI:
-
-```sh
-cargo fmt --all -- --check
-cargo clippy --locked --all-targets -- -D warnings
-cargo test --locked --all-targets
-cargo build --release --locked
-```
-
-For UI changes, test both the interactive dashboard and `mlxtop --once` and
-include a terminal screenshot with the pull request. See
-[CONTRIBUTING.md](../CONTRIBUTING.md) for design boundaries and contribution
-licensing. The longer-term provider and architecture plan is documented in
-[OPEN_SOURCE_ROADMAP.md](https://github.com/maximpri/mlxtop/blob/main/OPEN_SOURCE_ROADMAP.md).
-
-## Deployment helper
-
-The optional deployment script creates versioned remote releases and
-updates a `current` symlink. A binary-only deployment sends only the locally
-built executable:
-
-```sh
-cargo build --release --locked
-BUILD_ON_REMOTE=0 ./scripts/cicd.sh --host example.local --user deploy
-```
-
-Useful overrides:
-
-```text
-REMOTE_DIR                 remote install root (default: $HOME/mlxtop)
-SSH_KEY                    private key for SSH/SCP
-BUILD_ON_REMOTE            1 to build on target, 0 for binary-only install
-KEEP_RELEASES              release count to retain
-RESTART_COMMAND            optional restart hook
-HEALTHCHECK_COMMAND        optional post-deploy check
-```
-
-## Build a macOS disk image
-
-Start with a release payload containing the `mlxtop` binary, documentation,
-`LICENSE`, `THIRD_PARTY_NOTICES.md`, and a `licenses` directory with the dependency
-and Rust standard-library notices. Package it on macOS:
-
-```sh
-./scripts/package-dmg.sh path/to/release-payload target/dmg-release
-```
-
-This creates a compressed DMG containing `Install mlxtop.pkg` and installation
-instructions, plus a `SHA256SUMS` file beside the DMG. The package installs the
-command in `/usr/local/bin` and documentation and notices under
-`/usr/local/share/mlxtop/<version>`. It requires an administrator account.
-The build script creates an unsigned package and does not notarize it.
-
-The Terminal installer in `scripts/install.sh` downloads the same DMG, verifies
-its checksum, and extracts the package to install the command in `~/.local/bin`
-without sudo. Use the installer linked from the current README; the original
-installer in the historical v1.0.0 source tag used the superseded tarball.
+`llamatop` is strictly read-only and local-first:
+- Communicates exclusively over local loopback sockets (`127.0.0.1`) and native kernel/driver interfaces.
+- Does not log, intercept, or inspect prompt text, completion tokens, or model weights.
+- Contains no analytics, background phone-home routines, or third-party telemetry collection.
