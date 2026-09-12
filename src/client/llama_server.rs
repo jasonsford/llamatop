@@ -1,6 +1,6 @@
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use sysinfo::{ProcessRefreshKind, RefreshKind, System};
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -28,6 +28,10 @@ pub struct SlotInfo {
 
     #[serde(default)]
     pub t_token: Option<f64>,
+
+    // Calculated fields across polls
+    #[serde(skip)]
+    pub calculated_tps: Option<f64>,
 }
 
 fn default_id_task() -> i64 {
@@ -39,11 +43,11 @@ impl SlotInfo {
         if self.is_processing {
             if self.n_decoded > 0 {
                 "GENERATING"
-            } else {
+            } else if self.n_prompt_tokens_processed < self.n_prompt_tokens {
                 "PREFILLING"
+            } else {
+                "GENERATING"
             }
-        } else if self.id_task != -1 {
-            "BUSY"
         } else {
             "IDLE"
         }
@@ -83,10 +87,17 @@ pub struct MultiLlamaStats {
     pub total_tokens_per_sec: f64,
 }
 
+#[derive(Clone)]
+struct PrevSlotState {
+    decoded: usize,
+    timestamp: Instant,
+}
+
 pub struct MultiLlamaManager {
     client: reqwest::Client,
     sys: System,
     default_ports: Vec<u16>,
+    prev_slots: HashMap<(u16, u32), PrevSlotState>,
 }
 
 impl MultiLlamaManager {
@@ -99,10 +110,10 @@ impl MultiLlamaManager {
                 .unwrap(),
             sys: System::new_with_specifics(refresh),
             default_ports: vec![8080, 8081, 8082, 8083, 8084, 8085, 8000],
+            prev_slots: HashMap::new(),
         }
     }
 
-    /// Discover running llama-server processes and extract their command-line flags
     fn scan_processes(&mut self) -> HashMap<u16, (u32, String)> {
         self.sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
         let mut map = HashMap::new();
@@ -171,7 +182,6 @@ impl MultiLlamaManager {
                     return None;
                 }
 
-                // Resolve model name: use process cmdline hint or query /v1/models
                 let mut model_name = proc_info
                     .as_ref()
                     .map(|(_, m)| m.clone())
@@ -195,33 +205,71 @@ impl MultiLlamaManager {
                     model_name = format!("llama-server:{}", port);
                 }
 
-                let active = slots.iter().filter(|s| s.is_processing || s.id_task != -1).count();
-                let avg_tps = slots
-                    .iter()
-                    .filter_map(|s| s.t_token)
-                    .filter(|t| *t > 0.0)
-                    .map(|t| 1000.0 / t)
-                    .sum::<f64>();
-
-                Some(LlamaInstance {
-                    pid: proc_info.map(|(p, _)| p).unwrap_or(0),
-                    port,
-                    model_name,
-                    active_slots: active,
-                    total_slots: slots.len(),
-                    tokens_per_sec: avg_tps,
-                    slots,
-                })
+                Some((port, proc_info.map(|(p, _)| p).unwrap_or(0), model_name, slots))
             }));
         }
 
         let mut instances = Vec::new();
         let mut total_tps = 0.0;
+        let now = Instant::now();
 
         for task in tasks {
-            if let Ok(Some(inst)) = task.await {
-                total_tps += inst.tokens_per_sec;
-                instances.push(inst);
+            if let Ok(Some((port, pid, model_name, mut slots))) = task.await {
+                let mut inst_tps = 0.0;
+
+                for slot in &mut slots {
+                    let key = (port, slot.id);
+
+                    if slot.is_processing {
+                        if let Some(prev) = self.prev_slots.get(&key) {
+                            let dt = now.duration_since(prev.timestamp).as_secs_f64();
+                            if dt > 0.1 && slot.n_decoded >= prev.decoded {
+                                let delta_tokens = (slot.n_decoded - prev.decoded) as f64;
+                                let tps = delta_tokens / dt;
+                                if tps > 0.0 {
+                                    slot.calculated_tps = Some(tps);
+                                    inst_tps += tps;
+                                }
+                            }
+                        }
+
+                        // Fallback to internal t_token if delta hasn't populated yet
+                        if slot.calculated_tps.is_none() {
+                            if let Some(ms) = slot.t_token {
+                                if ms > 0.0 {
+                                    let tps = 1000.0 / ms;
+                                    slot.calculated_tps = Some(tps);
+                                    inst_tps += tps;
+                                }
+                            }
+                        }
+
+                        self.prev_slots.insert(
+                            key,
+                            PrevSlotState {
+                                decoded: slot.n_decoded,
+                                timestamp: now,
+                            },
+                        );
+                    } else {
+                        // Slot is idle; reset state tracking
+                        self.prev_slots.remove(&key);
+                        slot.calculated_tps = None;
+                    }
+                }
+
+                total_tps += inst_tps;
+                let active = slots.iter().filter(|s| s.is_processing).count();
+
+                instances.push(LlamaInstance {
+                    pid,
+                    port,
+                    model_name,
+                    active_slots: active,
+                    total_slots: slots.len(),
+                    tokens_per_sec: inst_tps,
+                    slots,
+                });
             }
         }
 

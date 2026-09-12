@@ -140,14 +140,18 @@ fn draw_system_overview(frame: &mut Frame, area: Rect, host: &HostStats, llama: 
                 "—".into()
             };
 
-            let speed_label = s.t_token
-                .map(|t| format!("{:.1}ms", t))
-                .unwrap_or_else(|| "—".into());
+            let speed_label = if let Some(tps) = s.calculated_tps {
+                format!("{:.1} t/s", tps)
+            } else if let Some(t) = s.t_token {
+                format!("{:.1}ms", t)
+            } else {
+                "—".into()
+            };
 
             rows.push(
                 Row::new(vec![
                     format!(":{}", inst.port),
-                    truncate_str(&inst.model_name, 24),
+                    truncate_str(&inst.model_name, 26),
                     format!("Slot {}", s.id),
                     state.to_string(),
                     ctx_label,
@@ -220,8 +224,9 @@ fn draw_gpus(frame: &mut Frame, area: Rect, gpus: &[GpuDeviceStats]) {
 }
 
 fn draw_gpu_card(frame: &mut Frame, area: Rect, gpu: &GpuDeviceStats) {
+    let clean_name = clean_gpu_name(&gpu.name);
     let card = Block::default()
-        .title(format!(" [{}] {} ", gpu.index, truncate_str(&gpu.name, 18)))
+        .title(format!(" [{}] {} ", gpu.index, truncate_str(&clean_name, 18)))
         .borders(Borders::ALL)
         .border_style(Style::default().fg(CYAN))
         .style(Style::default().bg(PANEL));
@@ -280,4 +285,11 @@ fn truncate_str(s: &str, max_len: usize) -> String {
     } else {
         s.to_string()
     }
+}
+
+fn clean_gpu_name(name: &str) -> String {
+    name.replace("NVIDIA GeForce ", "")
+        .replace("NVIDIA ", "")
+        .trim()
+        .to_string()
 }
