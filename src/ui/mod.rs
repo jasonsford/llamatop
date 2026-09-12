@@ -2,7 +2,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Gauge, Paragraph, Row, Table},
+    widgets::{Block, Borders, Gauge, Paragraph, Row, Sparkline, Table},
     Frame,
 };
 
@@ -33,14 +33,14 @@ pub fn draw_dashboard(
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3),  // Header bar
-            Constraint::Length(10), // Host RAM/CPU & Multi-Instance Slot Table
-            Constraint::Min(12),    // Multi-GPU Cards Strip
+            Constraint::Length(10), // Host RAM/Swap & Instances Table
+            Constraint::Min(14),    // 5-GPU Cards with Sparklines & Attribution
         ])
         .split(area);
 
     draw_header(frame, chunks[0], llama);
     draw_system_overview(frame, chunks[1], host, llama);
-    draw_gpus(frame, chunks[2], gpus);
+    draw_gpus(frame, chunks[2], gpus, llama);
 }
 
 fn draw_header(frame: &mut Frame, area: Rect, llama: &MultiLlamaStats) {
@@ -72,10 +72,10 @@ fn draw_header(frame: &mut Frame, area: Rect, llama: &MultiLlamaStats) {
 fn draw_system_overview(frame: &mut Frame, area: Rect, host: &HostStats, llama: &MultiLlamaStats) {
     let cols = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
+        .constraints([Constraint::Percentage(42), Constraint::Percentage(58)])
         .split(area);
 
-    // Host Memory & CPU
+    // Host Memory, Swap, Paging & CPU
     let ram_used_gb = host.used_memory as f64 / 1024.0 / 1024.0 / 1024.0;
     let ram_total_gb = host.total_memory as f64 / 1024.0 / 1024.0 / 1024.0;
     let ram_pct = if host.total_memory > 0 {
@@ -84,8 +84,16 @@ fn draw_system_overview(frame: &mut Frame, area: Rect, host: &HostStats, llama: 
         0
     };
 
+    let swap_used_gb = host.used_swap as f64 / 1024.0 / 1024.0 / 1024.0;
+    let swap_total_gb = host.total_swap as f64 / 1024.0 / 1024.0 / 1024.0;
+    let swap_pct = if host.total_swap > 0 {
+        ((host.used_swap as f64 / host.total_swap as f64) * 100.0) as u16
+    } else {
+        0
+    };
+
     let host_block = Block::default()
-        .title(" Host System ")
+        .title(" Host System (Memory & Paging) ")
         .borders(Borders::ALL)
         .border_style(Style::default().fg(DIM))
         .style(Style::default().bg(PANEL));
@@ -95,24 +103,42 @@ fn draw_system_overview(frame: &mut Frame, area: Rect, host: &HostStats, llama: 
 
     let host_rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(2), Constraint::Length(2), Constraint::Min(1)])
+        .constraints([
+            Constraint::Length(2), // RAM
+            Constraint::Length(2), // Swap
+            Constraint::Length(2), // CPU
+            Constraint::Length(1), // Paging I/O
+        ])
         .split(inner);
 
     let ram_gauge = Gauge::default()
-        .block(Block::default().title(format!("RAM: {:.1} / {:.1} GiB", ram_used_gb, ram_total_gb)))
+        .block(Block::default().title(format!("RAM: {:.1}/{:.1} GiB", ram_used_gb, ram_total_gb)))
         .gauge_style(Style::default().fg(CYAN).bg(DIM))
         .percent(ram_pct);
     frame.render_widget(ram_gauge, host_rows[0]);
 
+    let swap_gauge = Gauge::default()
+        .block(Block::default().title(format!("Swap: {:.1}/{:.1} GiB", swap_used_gb, swap_total_gb)))
+        .gauge_style(Style::default().fg(if swap_pct > 50 { RED } else { YELLOW }).bg(DIM))
+        .percent(swap_pct);
+    frame.render_widget(swap_gauge, host_rows[1]);
+
     let cpu_gauge = Gauge::default()
         .block(Block::default().title(format!("CPU: {:.1}%", host.cpu_load_percent)))
-        .gauge_style(Style::default().fg(YELLOW).bg(DIM))
+        .gauge_style(Style::default().fg(GREEN).bg(DIM))
         .percent(host.cpu_load_percent.clamp(0.0, 100.0) as u16);
-    frame.render_widget(cpu_gauge, host_rows[1]);
+    frame.render_widget(cpu_gauge, host_rows[2]);
 
-    // Multi-Server Active Slots Table (State removed, extra width given to Model & Context)
+    let paging_line = Paragraph::new(Line::from(vec![
+        Span::styled("Paging I/O: ", Style::default().fg(DIM)),
+        Span::styled(format!("▼ {:.1} MB/s in  ", host.page_in_mb_s), Style::default().fg(if host.page_in_mb_s > 5.0 { RED } else { Color::White })),
+        Span::styled(format!("▲ {:.1} MB/s out", host.page_out_mb_s), Style::default().fg(if host.page_out_mb_s > 5.0 { RED } else { Color::White })),
+    ]));
+    frame.render_widget(paging_line, host_rows[3]);
+
+    // Active Instances Table (No Slot Column)
     let slots_block = Block::default()
-        .title(" Active Models & Server Slots ")
+        .title(" Active Models & Instances ")
         .borders(Borders::ALL)
         .border_style(Style::default().fg(DIM))
         .style(Style::default().bg(PANEL));
@@ -124,34 +150,27 @@ fn draw_system_overview(frame: &mut Frame, area: Rect, host: &HostStats, llama: 
     for inst in &llama.instances {
         for s in &inst.slots {
             let ctx_label = if s.n_ctx > 0 {
-                format!(
-                    "{}/{} ({:.0}%)",
-                    s.context_used(),
-                    s.n_ctx,
-                    (s.context_used() as f64 / s.n_ctx as f64) * 100.0
-                )
+                format!("{}/{} ({:.0}%)", s.context_used(), s.n_ctx, (s.context_used() as f64 / s.n_ctx as f64) * 100.0)
             } else {
                 "—".into()
             };
 
-            let (speed_label, speed_color) = if let Some(tps) = s.calculated_tps {
-                (format!("{:.1} t/s", tps), GREEN)
+            let speed_label = if let Some(tps) = s.calculated_tps {
+                format!("{:.1} t/s", tps)
             } else if let Some(t) = s.t_token {
-                (format!("{:.1}ms", t), GREEN)
+                format!("{:.1}ms", t)
             } else {
-                ("—".into(), DIM)
+                "—".into()
             };
 
             rows.push(
                 Row::new(vec![
                     format!(":{}", inst.port),
-                    truncate_str(&inst.model_name, 30),
-                    format!("Slot {}", s.id),
+                    truncate_str(&inst.model_name, 34),
                     ctx_label,
                     speed_label,
                 ])
-                .style(Style::default().fg(if s.is_processing { Color::White } else { DIM }))
-                .bottom_margin(0),
+                .style(Style::default().fg(if s.is_processing { Color::White } else { DIM })),
             );
         }
     }
@@ -160,8 +179,7 @@ fn draw_system_overview(frame: &mut Frame, area: Rect, host: &HostStats, llama: 
         rows.push(
             Row::new(vec![
                 "—",
-                "No active server slots found",
-                "—",
+                "No active server instances found",
                 "—",
                 "—",
             ])
@@ -173,21 +191,20 @@ fn draw_system_overview(frame: &mut Frame, area: Rect, host: &HostStats, llama: 
         rows,
         [
             Constraint::Length(7),  // Port
-            Constraint::Length(32), // Model
-            Constraint::Length(8),  // Slot
+            Constraint::Length(34), // Model
             Constraint::Length(22), // Context
             Constraint::Min(10),    // Speed
         ],
     )
     .header(
-        Row::new(vec!["Port", "Model", "Slot", "Context", "Speed"])
+        Row::new(vec!["Port", "Model", "Context", "Speed"])
             .style(Style::default().fg(CYAN).add_modifier(Modifier::BOLD)),
     );
 
     frame.render_widget(table, inner_slots);
 }
 
-fn draw_gpus(frame: &mut Frame, area: Rect, gpus: &[GpuDeviceStats]) {
+fn draw_gpus(frame: &mut Frame, area: Rect, gpus: &[GpuDeviceStats], llama: &MultiLlamaStats) {
     let block = Block::default()
         .title(format!(" NVIDIA Accelerators ({}) ", gpus.len()))
         .borders(Borders::ALL)
@@ -211,7 +228,7 @@ fn draw_gpus(frame: &mut Frame, area: Rect, gpus: &[GpuDeviceStats]) {
         .split(inner);
 
     for (i, gpu) in gpus.iter().enumerate() {
-        draw_gpu_card(frame, gpu_columns[i], gpu);
+        draw_gpu_card(frame, gpu_columns[i], gpu, llama);
     }
 }
 
@@ -222,7 +239,7 @@ fn clean_gpu_name(name: &str) -> String {
         .to_string()
 }
 
-fn draw_gpu_card(frame: &mut Frame, area: Rect, gpu: &GpuDeviceStats) {
+fn draw_gpu_card(frame: &mut Frame, area: Rect, gpu: &GpuDeviceStats, llama: &MultiLlamaStats) {
     let clean_name = clean_gpu_name(&gpu.name);
     let card = Block::default()
         .title(format!(" [{}] {} ", gpu.index, truncate_str(&clean_name, 18)))
@@ -237,12 +254,15 @@ fn draw_gpu_card(frame: &mut Frame, area: Rect, gpu: &GpuDeviceStats) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(2), // VRAM Gauge
-            Constraint::Length(2), // Core Util Gauge
-            Constraint::Length(2), // Memory Util Gauge
-            Constraint::Min(2),    // Temp & Power Stats
+            Constraint::Length(1), // Compute Utilization Sparkline
+            Constraint::Length(1), // Memory Controller Sparkline
+            Constraint::Length(2), // Temp & Power
+            Constraint::Length(1), // PCIe TX/RX Throughput
+            Constraint::Min(1),    // Active Process / Model Attribution
         ])
         .split(inner);
 
+    // 1. VRAM Gauge
     let vram_used_gb = gpu.vram_used as f64 / 1024.0 / 1024.0 / 1024.0;
     let vram_total_gb = gpu.vram_total as f64 / 1024.0 / 1024.0 / 1024.0;
     let vram_pct = if gpu.vram_total > 0 {
@@ -257,18 +277,25 @@ fn draw_gpu_card(frame: &mut Frame, area: Rect, gpu: &GpuDeviceStats) {
         .percent(vram_pct);
     frame.render_widget(vram_gauge, rows[0]);
 
-    let core_gauge = Gauge::default()
-        .block(Block::default().title(format!("Core: {}%", gpu.gpu_util)))
-        .gauge_style(Style::default().fg(CYAN).bg(DIM))
-        .percent(gpu.gpu_util.min(100) as u16);
-    frame.render_widget(core_gauge, rows[1]);
+    // 2. Compute Utilization Sparkline
+    let compute_data: Vec<u64> = gpu.compute_history.iter().copied().collect();
+    let compute_spark = Sparkline::default()
+        .block(Block::default().title(format!("SM: {}%", gpu.gpu_util)))
+        .data(&compute_data)
+        .max(100)
+        .style(Style::default().fg(CYAN));
+    frame.render_widget(compute_spark, rows[1]);
 
-    let mem_gauge = Gauge::default()
+    // 3. Memory Controller Sparkline
+    let mem_data: Vec<u64> = gpu.memory_history.iter().copied().collect();
+    let mem_spark = Sparkline::default()
         .block(Block::default().title(format!("Bus: {}%", gpu.mem_util)))
-        .gauge_style(Style::default().fg(YELLOW).bg(DIM))
-        .percent(gpu.mem_util.min(100) as u16);
-    frame.render_widget(mem_gauge, rows[2]);
+        .data(&mem_data)
+        .max(100)
+        .style(Style::default().fg(YELLOW));
+    frame.render_widget(mem_spark, rows[2]);
 
+    // 4. Temp & Power Details
     let details = Paragraph::new(vec![
         Line::from(vec![
             Span::styled(format!("{}°C ", gpu.temp_c), Style::default().fg(if gpu.temp_c > 80 { RED } else { GREEN })),
@@ -276,6 +303,36 @@ fn draw_gpu_card(frame: &mut Frame, area: Rect, gpu: &GpuDeviceStats) {
         ]),
     ]);
     frame.render_widget(details, rows[3]);
+
+    // 5. PCIe Throughput
+    let pcie_line = Paragraph::new(Line::from(vec![
+        Span::styled("PCIe: ", Style::default().fg(DIM)),
+        Span::styled(format!("TX {:.0}M ", gpu.pcie_tx_mb_s), Style::default().fg(Color::White)),
+        Span::styled(format!("RX {:.0}M", gpu.pcie_rx_mb_s), Style::default().fg(Color::White)),
+    ]));
+    frame.render_widget(pcie_line, rows[4]);
+
+    // 6. Process / Model Attribution
+    let mut model_labels = Vec::new();
+    for proc in &gpu.running_processes {
+        if let Some(inst) = llama.instances.iter().find(|i| i.pid == proc.pid) {
+            let proc_gb = proc.used_vram as f64 / 1024.0 / 1024.0 / 1024.0;
+            model_labels.push(Span::styled(
+                format!("▶ :{} ({:.1}G)", inst.port, proc_gb),
+                Style::default().fg(GREEN).add_modifier(Modifier::BOLD),
+            ));
+        }
+    }
+
+    if model_labels.is_empty() {
+        if gpu.vram_used > 500 * 1024 * 1024 {
+            model_labels.push(Span::styled("● Allocated", Style::default().fg(DIM)));
+        } else {
+            model_labels.push(Span::styled("○ Free", Style::default().fg(DIM)));
+        }
+    }
+
+    frame.render_widget(Paragraph::new(Line::from(model_labels)), rows[5]);
 }
 
 fn truncate_str(s: &str, max_len: usize) -> String {
