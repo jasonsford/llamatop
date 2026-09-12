@@ -13,20 +13,12 @@ mod client;
 mod telemetry;
 mod ui;
 
-use client::llama_server::LlamaClient;
+use client::llama_server::MultiLlamaManager;
 use telemetry::create_collector;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about = "Top monitor for llama.cpp and multi-GPU setups on Linux", long_about = None)]
 struct Args {
-    /// Host for llama-server
-    #[arg(short = 'H', long, default_value = "127.0.0.1")]
-    host: String,
-
-    /// Port for llama-server
-    #[arg(short, long, default_value_t = 8080)]
-    port: u16,
-
     /// Refresh interval in milliseconds
     #[arg(short, long, default_value_t = 1000)]
     interval: u64,
@@ -43,14 +35,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut terminal = Terminal::new(backend)?;
 
     let mut collector = create_collector();
-    let llama_client = LlamaClient::new(&args.host, args.port);
+    let mut llama_manager = MultiLlamaManager::new();
 
     let refresh_duration = Duration::from_millis(args.interval);
     let mut last_tick = std::time::Instant::now();
 
     let mut host_stats = collector.poll_host();
     let mut gpu_stats = collector.poll_gpus();
-    let mut llama_stats = llama_client.poll().await;
+    let mut llama_stats = llama_manager.poll().await;
 
     loop {
         terminal.draw(|f| {
@@ -72,7 +64,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         if last_tick.elapsed() >= refresh_duration {
             host_stats = collector.poll_host();
             gpu_stats = collector.poll_gpus();
-            llama_stats = llama_client.poll().await;
+            llama_stats = llama_manager.poll().await;
             last_tick = std::time::Instant::now();
         }
     }

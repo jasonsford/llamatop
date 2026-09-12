@@ -6,7 +6,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::client::llama_server::LlamaServerStats;
+use crate::client::llama_server::MultiLlamaStats;
 use crate::telemetry::{GpuDeviceStats, HostStats};
 
 const CYAN: Color = Color::Rgb(90, 202, 225);
@@ -20,7 +20,7 @@ pub fn draw_dashboard(
     frame: &mut Frame,
     host: &HostStats,
     gpus: &[GpuDeviceStats],
-    llama: &LlamaServerStats,
+    llama: &MultiLlamaStats,
 ) {
     let area = frame.area();
 
@@ -33,8 +33,8 @@ pub fn draw_dashboard(
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3),  // Header bar
-            Constraint::Length(10), // Host RAM/CPU & llama-server status
-            Constraint::Min(12),    // Multi-GPU cards
+            Constraint::Length(10), // Host RAM/CPU & Multi-Instance Slot Table
+            Constraint::Min(12),    // 5-GPU Cards Strip
         ])
         .split(area);
 
@@ -43,20 +43,24 @@ pub fn draw_dashboard(
     draw_gpus(frame, chunks[2], gpus);
 }
 
-fn draw_header(frame: &mut Frame, area: Rect, llama: &LlamaServerStats) {
-    let status_span = if llama.is_online {
-        Span::styled(" ● ONLINE ", Style::default().fg(GREEN).add_modifier(Modifier::BOLD))
+fn draw_header(frame: &mut Frame, area: Rect, llama: &MultiLlamaStats) {
+    let count = llama.instances.len();
+    let status_span = if count > 0 {
+        Span::styled(
+            format!(" ● {} INSTANCE{} ONLINE ", count, if count > 1 { "S" } else { "" }),
+            Style::default().fg(GREEN).add_modifier(Modifier::BOLD),
+        )
     } else {
-        Span::styled(" ○ OFFLINE ", Style::default().fg(RED).add_modifier(Modifier::BOLD))
+        Span::styled(" ○ NO SERVERS DETECTED ", Style::default().fg(RED).add_modifier(Modifier::BOLD))
     };
 
     let title = Paragraph::new(Line::from(vec![
         Span::styled(" llamatop ", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
         Span::styled("v0.1.0 ", Style::default().fg(CYAN)),
-        Span::raw("│ llama.cpp server: "),
+        Span::raw("│ "),
         status_span,
         Span::styled(
-            format!("({:.1} tok/s avg)", llama.tokens_per_sec),
+            format!("(Aggregate: {:.1} tok/s)", llama.total_tokens_per_sec),
             Style::default().fg(Color::Yellow),
         ),
     ]))
@@ -69,10 +73,10 @@ fn draw_header(frame: &mut Frame, area: Rect, llama: &LlamaServerStats) {
     frame.render_widget(title, area);
 }
 
-fn draw_system_overview(frame: &mut Frame, area: Rect, host: &HostStats, llama: &LlamaServerStats) {
+fn draw_system_overview(frame: &mut Frame, area: Rect, host: &HostStats, llama: &MultiLlamaStats) {
     let cols = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
         .split(area);
 
     // Host Memory & CPU
@@ -85,7 +89,7 @@ fn draw_system_overview(frame: &mut Frame, area: Rect, host: &HostStats, llama: 
     };
 
     let host_block = Block::default()
-        .title(" Host System (CPU / RAM) ")
+        .title(" Host System ")
         .borders(Borders::ALL)
         .border_style(Style::default().fg(DIM))
         .style(Style::default().bg(PANEL));
@@ -99,20 +103,20 @@ fn draw_system_overview(frame: &mut Frame, area: Rect, host: &HostStats, llama: 
         .split(inner);
 
     let ram_gauge = Gauge::default()
-        .block(Block::default().title(format!("System RAM: {:.1} / {:.1} GiB", ram_used_gb, ram_total_gb)))
+        .block(Block::default().title(format!("RAM: {:.1} / {:.1} GiB", ram_used_gb, ram_total_gb)))
         .gauge_style(Style::default().fg(CYAN).bg(DIM))
         .percent(ram_pct);
     frame.render_widget(ram_gauge, host_rows[0]);
 
     let cpu_gauge = Gauge::default()
-        .block(Block::default().title(format!("CPU Usage: {:.1}%", host.cpu_load_percent)))
+        .block(Block::default().title(format!("CPU: {:.1}%", host.cpu_load_percent)))
         .gauge_style(Style::default().fg(YELLOW).bg(DIM))
         .percent(host.cpu_load_percent.clamp(0.0, 100.0) as u16);
     frame.render_widget(cpu_gauge, host_rows[1]);
 
-    // llama-server Slots overview
+    // Multi-Server Active Slots Table
     let slots_block = Block::default()
-        .title(" llama-server Slots ")
+        .title(" Active Models & Server Slots ")
         .borders(Borders::ALL)
         .border_style(Style::default().fg(DIM))
         .style(Style::default().bg(PANEL));
@@ -120,41 +124,52 @@ fn draw_system_overview(frame: &mut Frame, area: Rect, host: &HostStats, llama: 
     let inner_slots = slots_block.inner(cols[1]);
     frame.render_widget(slots_block, cols[1]);
 
-    let slot_rows: Vec<Row> = llama
-        .slots
-        .iter()
-        .map(|s| {
-            let state_str = match s.state {
-                1 => "PROCESSING",
-                2 => "GENERATING",
-                _ => "IDLE",
+    let mut rows = Vec::new();
+    for inst in &llama.instances {
+        for s in &inst.slots {
+            let (state_str, color) = match s.state {
+                1 => ("PROCESSING", YELLOW),
+                2 => ("GENERATING", GREEN),
+                _ => ("IDLE", DIM),
             };
-            let color = match s.state {
-                1 => YELLOW,
-                2 => GREEN,
-                _ => DIM,
-            };
-            Row::new(vec![
-                format!("Slot {}", s.id),
-                state_str.to_string(),
-                format!("{}/{} ctx", s.n_past, s.n_ctx),
-                s.t_token.map(|t| format!("{:.1} ms", t)).unwrap_or_else(|| "—".into()),
-            ])
-            .style(Style::default().fg(color))
-        })
-        .collect();
+            rows.push(
+                Row::new(vec![
+                    format!(":{}", inst.port),
+                    truncate_str(&inst.model_name, 22),
+                    format!("Slot {}", s.id),
+                    state_str.to_string(),
+                    format!("{}/{} ctx", s.n_past, s.n_ctx),
+                    s.t_token.map(|t| format!("{:.1} ms", t)).unwrap_or_else(|| "—".into()),
+                ])
+                .style(Style::default().fg(color)),
+            );
+        }
+    }
+
+    if rows.is_empty() {
+        rows.push(Row::new(vec![
+            "—",
+            "No active server slots found",
+            "—",
+            "—",
+            "—",
+            "—",
+        ]).style(Style::default().fg(DIM)));
+    }
 
     let table = Table::new(
-        slot_rows,
+        rows,
         [
-            Constraint::Length(10),
-            Constraint::Length(14),
-            Constraint::Length(16),
-            Constraint::Min(10),
+            Constraint::Length(7),  // Port
+            Constraint::Length(24), // Model
+            Constraint::Length(8),  // Slot
+            Constraint::Length(12), // State
+            Constraint::Length(16), // Context
+            Constraint::Min(9),     // Speed
         ],
     )
     .header(
-        Row::new(vec!["Slot", "State", "Context", "Speed"])
+        Row::new(vec!["Port", "Model", "Slot", "State", "Context", "Speed"])
             .style(Style::default().fg(CYAN).add_modifier(Modifier::BOLD)),
     );
 
@@ -163,7 +178,7 @@ fn draw_system_overview(frame: &mut Frame, area: Rect, host: &HostStats, llama: 
 
 fn draw_gpus(frame: &mut Frame, area: Rect, gpus: &[GpuDeviceStats]) {
     let block = Block::default()
-        .title(" NVIDIA Accelerators ")
+        .title(format!(" NVIDIA Accelerators ({}) ", gpus.len()))
         .borders(Borders::ALL)
         .border_style(Style::default().fg(DIM))
         .style(Style::default().bg(PANEL));
@@ -191,7 +206,7 @@ fn draw_gpus(frame: &mut Frame, area: Rect, gpus: &[GpuDeviceStats]) {
 
 fn draw_gpu_card(frame: &mut Frame, area: Rect, gpu: &GpuDeviceStats) {
     let card = Block::default()
-        .title(format!(" [{}] {} ", gpu.index, gpu.name))
+        .title(format!(" [{}] {} ", gpu.index, truncate_str(&gpu.name, 18)))
         .borders(Borders::ALL)
         .border_style(Style::default().fg(CYAN))
         .style(Style::default().bg(PANEL));
@@ -218,36 +233,36 @@ fn draw_gpu_card(frame: &mut Frame, area: Rect, gpu: &GpuDeviceStats) {
     };
 
     let vram_gauge = Gauge::default()
-        .block(Block::default().title(format!("VRAM: {:.2} / {:.2} GiB", vram_used_gb, vram_total_gb)))
+        .block(Block::default().title(format!("VRAM: {:.1}/{:.1}G", vram_used_gb, vram_total_gb)))
         .gauge_style(Style::default().fg(GREEN).bg(DIM))
         .percent(vram_pct);
     frame.render_widget(vram_gauge, rows[0]);
 
     let core_gauge = Gauge::default()
-        .block(Block::default().title(format!("Core Utilization: {}%", gpu.gpu_util)))
+        .block(Block::default().title(format!("Core: {}%", gpu.gpu_util)))
         .gauge_style(Style::default().fg(CYAN).bg(DIM))
         .percent(gpu.gpu_util.min(100) as u16);
     frame.render_widget(core_gauge, rows[1]);
 
     let mem_gauge = Gauge::default()
-        .block(Block::default().title(format!("Memory Bus Activity: {}%", gpu.mem_util)))
+        .block(Block::default().title(format!("Bus: {}%", gpu.mem_util)))
         .gauge_style(Style::default().fg(YELLOW).bg(DIM))
         .percent(gpu.mem_util.min(100) as u16);
     frame.render_widget(mem_gauge, rows[2]);
 
     let details = Paragraph::new(vec![
         Line::from(vec![
-            Span::styled("Temp: ", Style::default().fg(DIM)),
-            Span::styled(
-                format!("{}°C", gpu.temp_c),
-                Style::default().fg(if gpu.temp_c > 80 { RED } else { GREEN }),
-            ),
-            Span::styled("  Power: ", Style::default().fg(DIM)),
-            Span::styled(
-                format!("{:.1}W / {:.1}W", gpu.power_watts, gpu.power_limit_watts),
-                Style::default().fg(Color::White),
-            ),
+            Span::styled(format!("{}°C ", gpu.temp_c), Style::default().fg(if gpu.temp_c > 80 { RED } else { GREEN })),
+            Span::styled(format!("{:.0}W/{:.0}W", gpu.power_watts, gpu.power_limit_watts), Style::default().fg(Color::White)),
         ]),
     ]);
     frame.render_widget(details, rows[3]);
+}
+
+fn truncate_str(s: &str, max_len: usize) -> String {
+    if s.chars().count() > max_len {
+        format!("{}…", &s.chars().take(max_len.saturating_sub(1)).collect::<String>())
+    } else {
+        s.to_string()
+    }
 }
