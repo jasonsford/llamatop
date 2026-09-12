@@ -4,6 +4,8 @@
 
 Track engine-level generation speed, active inference slots, context saturation, and hardware bottlenecks in real time. `llamatop` couples direct NVIDIA hardware telemetry (NVML) with native `llama-server` Prometheus and slot metrics in a dense, low-overhead TUI.
 
+![llamatop Overview Dashboard](docs/screenshots/overview.jpg)
+
 [Quick Start](#quick-start) · [Telemetry & Features](#telemetry--features) · [User Guide](docs/USER_GUIDE.md) · [Contributing](CONTRIBUTING.md)
 
 ---
