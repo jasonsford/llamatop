@@ -159,14 +159,17 @@ fn draw_system_overview(frame: &mut Frame, area: Rect, host: &HostStats, llama: 
     }
 
     if rows.is_empty() {
-        rows.push(Row::new(vec![
-            "—".into(),
-            "No active server slots found".into(),
-            "—".into(),
-            "—".into(),
-            "—".into(),
-            "—".into(),
-        ]).style(Style::default().fg(DIM)));
+        rows.push(
+            Row::new(vec![
+                "—",
+                "No active server slots found",
+                "—",
+                "—",
+                "—",
+                "—",
+            ])
+            .style(Style::default().fg(DIM)),
+        );
     }
 
     let table = Table::new(
