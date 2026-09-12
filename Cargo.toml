@@ -1,28 +1,30 @@
 [package]
-name = "mlxtop"
-version = "1.0.0"
+name = "llamatop"
+version = "0.1.0"
 edition = "2021"
-rust-version = "1.88"
-description = "Full-screen macOS memory and local-LLM performance monitor"
+description = "A terminal-based top monitor for llama.cpp and multi-GPU setups on Linux based on https://github.com/maximpri/mlxtop"
 license = "MIT"
 readme = "README.md"
-repository = "https://github.com/maximpri/mlxtop"
-keywords = ["llm", "monitoring", "macos", "ratatui", "tui"]
-categories = ["command-line-utilities"]
-include = [
-  "/src/**",
-  "/Cargo.toml",
-  "/Cargo.lock",
-  "/README.md",
-  "/docs/**",
-  "/LICENSE",
-  "/CONTRIBUTING.md",
-  "/SECURITY.md",
-  "/THIRD_PARTY_NOTICES.md",
-  "/mlxtop.sh",
-]
+repository = "https://github.com/jasonsford/llamatop"
+keywords = ["llm", "monitoring", "ratatui", "tui", "llama-cpp"]
+categories = ["command-line-utilities", "hardware-support"]
 
 [dependencies]
-crossterm = "0.28"
+# Terminal UI
 ratatui = "0.29"
-serde_json = "1"
+crossterm = { version = "0.28", features = ["event-stream"] }
+
+# CLI Arguments (flags for --host, --port, --interval)
+clap = { version = "4.5", features = ["derive"] }
+
+# Async runtime & Network I/O (polling llama-server endpoints)
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.12", default-features = false, features = ["json"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Host Telemetry (CPU, System RAM, Swap across Windows/Linux)
+sysinfo = "0.33"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+nvml-wrapper = "0.10"
